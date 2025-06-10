@@ -1,0 +1,53 @@
+name: Build and Release Windows Executable # ワークフローの名前
+
+on:
+  release:
+    types: [published] # GitHubで新しいリリースが公開されたときにこのワークフローをトリガーします
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest # Windows環境でビルドを実行します
+
+    steps:
+    - name: Checkout repository # リポジトリのコードをチェックアウトします
+      uses: actions/checkout@v4
+
+    - name: Set up Python # Python環境をセットアップします
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.9' # 使用するPythonのバージョンを指定します (PyQt6の互換性を考慮)
+
+    - name: Install dependencies # requirements.txtに記載された依存関係をインストールします
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Install PyInstaller # PyInstallerをインストールします
+      run: pip install pyinstaller
+
+    - name: Build executable with PyInstaller # PyInstallerを使用して実行ファイルをビルドします
+      # --noconsole: 実行時にコマンドプロンプトを表示しない
+      # --onefile: すべての依存関係を単一の.exeファイルにまとめる
+      run: pyinstaller --noconsole --onefile Reagent_Qr_Manager.py
+
+    - name: Upload artifact (for debugging/optional download) # ビルドされた.exeファイルをGitHub Actionsのアーティファクトとしてアップロードします
+      # これは主にデバッグ用ですが、ワークフロー実行ページからダウンロードすることも可能です。
+      uses: actions/upload-artifact@v4
+      with:
+        name: Reagent_Qr_Manager_Executable
+        path: dist/Reagent_Qr_Manager.exe # 生成された.exeファイルへのパス
+
+    - name: Create GitHub Release (Attach Executable) # GitHub Releaseを作成し、実行ファイルを添付します
+      # このステップは、リリースが公開されたときのみ実行されます
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      if: github.event_name == 'release' && github.event.action == 'published'
+      with:
+        files: dist/Reagent_Qr_Manager.exe # リリースに添付するファイル
+        # リリース名やタグは、トリガーとなったGitHubリリースイベントから自動的に推論されます。
+        # body: | # オプション: リリースノートの本文をカスタマイズする場合
+        #   試薬QRマネージャーの新しい実行ファイルです。
+        #   添付の.exeファイルをダウンロードしてください。
+        #   リリースノート: ${{ github.event.release.body }} # GitHub UIで入力したリリースノートを含める場合
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub Actionsが自動的に提供する認証トークン
