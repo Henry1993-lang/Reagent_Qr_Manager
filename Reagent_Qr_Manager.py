@@ -1,256 +1,274 @@
 import sys
 import os
 import sqlite3
+import io
 from datetime import datetime
+
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QMessageBox, QListWidget, QComboBox, QTabWidget, QTableWidget,
-    QTableWidgetItem, QDialog, QDialogButtonBox, QCalendarWidget, QInputDialog
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
+    QHBoxLayout, QTabWidget, QTableWidget, QTableWidgetItem, QMessageBox,
+    QComboBox, QDialog, QDialogButtonBox
 )
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, QTimer
+
 import qrcode
 import cv2
 from pyzbar.pyzbar import decode
-from PyQt6.QtWidgets import QInputDialog
-
 
 DB_NAME = "reagents.db"
 
-# ------------------- Database Setup -------------------
+# ------------------- DB 初期化 -------------------
+
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS reagents (
+    c.execute("""CREATE TABLE IF NOT EXISTS reagents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT,
                     code TEXT UNIQUE,
                     location TEXT,
-                    qr_path TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS usage_history (
+                    qr_image BLOB
+                 )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS usage_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     reagent_code TEXT,
                     user TEXT,
-                    used_date TEXT,
-                    FOREIGN KEY(reagent_code) REFERENCES reagents(code))''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE)''')
+                    used_date TEXT
+                 )""")
     conn.commit()
     conn.close()
 
-# ------------------- Helper Functions -------------------
+
 def generate_code():
     today = datetime.now().strftime("%Y%m%d")
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM reagents WHERE code LIKE ?", (f"REAG-{today}-%",))
+    c.execute("SELECT COUNT(*) FROM reagents WHERE code LIKE ?", (f"{today}%",))
     count = c.fetchone()[0] + 1
     conn.close()
-    return f"REAG-{today}-{count:03}"
+    return f"{today}-{count:03d}"
 
-# ------------------- Main Window -------------------
+# ------------------- QR カメラダイアログ -------------------
+
+
+class QRCameraDialog(QDialog):
+    """ライブプレビューしながら1枚だけQRコードを読むダイアログ"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("QRコード読み取り (Esc でキャンセル)")
+        self.resize(640, 480)
+        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(self.label)
+
+        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not self.cap.isOpened():
+            raise RuntimeError("カメラを開けませんでした")
+
+        self.qr_payload = None
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.next_frame)
+        self.timer.start(30)
+
+    def next_frame(self):
+        ok, frame = self.cap.read()
+        if not ok:
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        self.label.setPixmap(QPixmap.fromImage(qimg).scaled(
+            self.label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+        decoded = decode(frame)
+        if decoded:
+            self.qr_payload = decoded[0].data.decode("utf-8")
+            self.accept()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+    def closeEvent(self, e):
+        if self.cap.isOpened():
+            self.cap.release()
+        self.timer.stop()
+        super().closeEvent(e)
+
+# ------------------- メインウィジェット -------------------
+
+
 class ReagentManager(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("有機合成原料 管理システム")
+        self.setWindowTitle("Reagent QR Manager")
         self.resize(800, 600)
+
+        self.current_code = None
+        self.current_qr_bytes = None
+
         self.tabs = QTabWidget()
+        self.register_tab = QWidget()
+        self.history_tab = QWidget()
 
-        self.init_register_tab()
-        self.init_usage_tab()
-        self.init_history_tab()
+        self.tabs.addTab(self.register_tab, "原料登録")
+        self.tabs.addTab(self.history_tab, "使用履歴検索")
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.tabs)
-        self.setLayout(layout)
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(self.tabs)
 
-    # Register Tab
-    def init_register_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
+        self._setup_register_tab()
+        self._setup_history_tab()
 
-        self.name_input = QLineEdit()
-        self.code_label = QLabel(generate_code())
-        self.location_input = QComboBox()
-        self.location_input.addItems(["冷蔵庫", "冷凍庫"])
-        self.qr_label = QLabel("QRコードがここに表示されます")
-        self.qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # ------------------- Register Tab -------------------
 
-        save_btn = QPushButton("QRコード生成＆保存")
-        save_btn.clicked.connect(self.generate_and_save_qr)
+    def _setup_register_tab(self):
+        name_lbl = QLabel("原料名:")
+        self.name_edit = QLineEdit()
 
-        layout.addWidget(QLabel("原料名:"))
-        layout.addWidget(self.name_input)
-        layout.addWidget(QLabel("管理番号:"))
-        layout.addWidget(self.code_label)
-        layout.addWidget(QLabel("保管場所:"))
-        layout.addWidget(self.location_input)
-        layout.addWidget(self.qr_label)
-        layout.addWidget(save_btn)
-        tab.setLayout(layout)
+        loc_lbl = QLabel("保管場所:")
+        self.loc_combo = QComboBox()
+        self.loc_combo.addItems(["冷蔵庫", "冷凍庫", "常温棚"])
 
-        self.tabs.addTab(tab, "原料登録")
+        self.code_lbl = QLabel("管理番号: -")
+        self.qr_display = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.qr_display.setFixedSize(200, 200)
 
-    # Usage Tab
-    def init_usage_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
+        gen_btn = QPushButton("QR生成")
+        gen_btn.clicked.connect(self.generate_qr)
 
-        self.reagent_name_select = QComboBox()
-        self.refresh_reagent_names()
+        save_btn = QPushButton("登録")
+        save_btn.clicked.connect(self.save_reagent)
 
-        self.user_select = QComboBox()
-        self.user_select.setEditable(True)
-        self.refresh_user_list()
+        lay = QVBoxLayout(self.register_tab)
+        form1 = QHBoxLayout()
+        form1.addWidget(name_lbl)
+        form1.addWidget(self.name_edit)
+        lay.addLayout(form1)
 
-        usage_btn = QPushButton("使用登録")
-        usage_btn.clicked.connect(self.save_usage)
+        form2 = QHBoxLayout()
+        form2.addWidget(loc_lbl)
+        form2.addWidget(self.loc_combo)
+        lay.addLayout(form2)
 
-        self.calendar = QCalendarWidget()
-        self.calendar.setGridVisible(True)
+        lay.addWidget(self.code_lbl)
+        lay.addWidget(self.qr_display)
+        btns = QHBoxLayout()
+        btns.addWidget(gen_btn)
+        btns.addWidget(save_btn)
+        lay.addLayout(btns)
+        lay.addStretch()
 
-        layout.addWidget(QLabel("原料名:"))
-        layout.addWidget(self.reagent_name_select)
-        layout.addWidget(QLabel("使用者:"))
-        layout.addWidget(self.user_select)
-        layout.addWidget(QLabel("使用日:"))
-        layout.addWidget(self.calendar)
-        layout.addWidget(usage_btn)
-        tab.setLayout(layout)
+    def generate_qr(self):
+        self.current_code = generate_code()
+        self.code_lbl.setText(f"管理番号: {self.current_code}")
 
-        self.tabs.addTab(tab, "使用記録登録")
+        qr = qrcode.QRCode(box_size=4, border=2)
+        qr.add_data(f"管理番号:{self.current_code}")
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-    # History Tab
-    def init_history_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        self.current_qr_bytes = buf.getvalue()
 
-        self.search_input = QLineEdit()
-        search_btn = QPushButton("検索（原料名）")
-        search_btn.clicked.connect(self.search_history_by_name)
-        scan_btn = QPushButton("QRコードから検索")
-        scan_btn.clicked.connect(self.search_by_qr)
-        self.history_table = QTableWidget(0, 3)
-        self.history_table.setHorizontalHeaderLabels(["原料名", "使用者", "使用日"])
+        qimg = QImage.fromData(self.current_qr_bytes)
+        pix = QPixmap.fromImage(qimg)
+        self.qr_display.setPixmap(pix.scaled(self.qr_display.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                             Qt.TransformationMode.SmoothTransformation))
 
-        layout.addWidget(self.search_input)
-        layout.addWidget(search_btn)
-        layout.addWidget(scan_btn)
-        layout.addWidget(self.history_table)
-        tab.setLayout(layout)
-
-        self.tabs.addTab(tab, "使用履歴表示")
-
-    def generate_and_save_qr(self):
-        name = self.name_input.text()
-        code = self.code_label.text()
-        location = self.location_input.currentText()
-        if not name:
-            QMessageBox.warning(self, "入力エラー", "原料名を入力してください。")
+    def save_reagent(self):
+        name = self.name_edit.text().strip()
+        location = self.loc_combo.currentText()
+        if not name or not self.current_code:
+            QMessageBox.warning(self, "入力不足", "原料名とQR生成を完了してください。")
             return
-        text = f"原料名: {name}\n管理番号: {code}\n保管場所: {location}"
-        qr = qrcode.make(text)
-
-        filepath, _ = QFileDialog.getSaveFileName(self, "QRコードの保存", f"{code}.png", "PNG Files (*.png)")
-        if filepath:
-            qr.save(filepath)
-            self.qr_label.setPixmap(QPixmap(filepath).scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio))
-            conn = sqlite3.connect(DB_NAME)
-            c = conn.cursor()
-            try:
-                c.execute("INSERT INTO reagents (name, code, location, qr_path) VALUES (?, ?, ?, ?)",
-                          (name, code, location, filepath))
-                conn.commit()
-                QMessageBox.information(self, "保存完了", "登録が完了しました。")
-                self.code_label.setText(generate_code())
-                self.refresh_reagent_names()
-            except sqlite3.IntegrityError:
-                QMessageBox.warning(self, "保存エラー", "管理番号が重複しています。")
-            finally:
-                conn.close()
-
-    def save_usage(self):
-        name = self.reagent_name_select.currentText()
-        user = self.user_select.currentText()
-        date = self.calendar.selectedDate().toString("yyyy-MM-dd")
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute("SELECT code FROM reagents WHERE name=?", (name,))
-        result = c.fetchone()
-        if not result:
-            QMessageBox.warning(self, "原料エラー", "指定された原料名は登録されていません。")
-            return
-        code = result[0]
         try:
-            c.execute("INSERT INTO usage_history (reagent_code, user, used_date) VALUES (?, ?, ?)", (code, user, date))
-            c.execute("INSERT OR IGNORE INTO users (name) VALUES (?)", (user,))
+            c.execute("INSERT INTO reagents (name, code, location, qr_image) VALUES (?,?,?,?)",
+                      (name, self.current_code, location, self.current_qr_bytes))
             conn.commit()
-            QMessageBox.information(self, "保存完了", "使用履歴を登録しました。")
+            QMessageBox.information(self, "登録完了", "登録が完了しました。")
+            self.name_edit.clear()
+            self.code_lbl.setText("管理番号: -")
+            self.qr_display.clear()
+            self.current_code = None
+            self.current_qr_bytes = None
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(self, "重複", "この管理番号は既に存在します。")
         finally:
             conn.close()
-            self.refresh_user_list()
 
-    def refresh_reagent_names(self):
-        self.reagent_name_select.clear()
+    # ------------------- History Tab -------------------
+
+    def _setup_history_tab(self):
+        search_lbl = QLabel("管理番号:")
+        self.search_edit = QLineEdit()
+        search_btn = QPushButton("検索")
+        search_btn.clicked.connect(lambda: self.search_history_by_code(self.search_edit.text().strip()))
+
+        qr_btn = QPushButton("QRコードから検索")
+        qr_btn.clicked.connect(self.search_by_qr)
+
+        top = QHBoxLayout()
+        top.addWidget(search_lbl)
+        top.addWidget(self.search_edit)
+        top.addWidget(search_btn)
+        top.addWidget(qr_btn)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["id", "管理番号", "使用者", "使用日"])
+
+        lay = QVBoxLayout(self.history_tab)
+        lay.addLayout(top)
+        lay.addWidget(self.table)
+        lay.addStretch()
+
+        self.populate_history_table()
+
+    def populate_history_table(self, code=None):
+        """履歴テーブルを（フィルタ付きで）再描画"""
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute("SELECT name FROM reagents")
-        self.reagent_name_select.addItems([row[0] for row in c.fetchall()])
+        if code:
+            c.execute(
+                "SELECT id, reagent_code, user, used_date "
+                "FROM usage_history WHERE reagent_code=? "
+                "ORDER BY used_date DESC",
+                (code,)
+            )
+        else:
+            c.execute(
+                "SELECT id, reagent_code, user, used_date "
+                "FROM usage_history ORDER BY used_date DESC"
+            )
+        rows = c.fetchall()
         conn.close()
 
-    def refresh_user_list(self):
-        self.user_select.clear()
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT name FROM users")
-        self.user_select.addItems([row[0] for row in c.fetchall()])
-        conn.close()
-
-    def search_history_by_name(self):
-        keyword = self.search_input.text()
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('''SELECT r.name, u.user, u.used_date FROM usage_history u
-                     JOIN reagents r ON u.reagent_code = r.code
-                     WHERE r.name LIKE ?''', (f"%{keyword}%",))
-        results = c.fetchall()
-        self.populate_history_table(results)
-        conn.close()
-
-    def search_by_qr(self):
-        cap = cv2.VideoCapture(0)
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            QMessageBox.warning(self, "エラー", "カメラから画像を取得できませんでした。")
-            return
-        decoded = decode(frame)
-        for obj in decoded:
-            data = obj.data.decode("utf-8")
-            for line in data.split('\n'):
-                if line.startswith("管理番号"):
-                    code = line.split(":")[-1].strip()
-                    self.search_history_by_code(code)
-                    return
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c_idx, val in enumerate(row):
+                self.table.setItem(r, c_idx, QTableWidgetItem(str(val)))
 
     def search_history_by_code(self, code):
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT r.name, u.user, u.used_date FROM usage_history u JOIN reagents r ON u.reagent_code = r.code WHERE u.reagent_code=?", (code,))
-        results = c.fetchall()
-        self.populate_history_table(results)
-        conn.close()
+        code = code.strip()
+        if not code:
+            QMessageBox.warning(self, "入力不足", "管理番号を入力してください。")
+            return
+        self.populate_history_table(code)
 
-    def populate_history_table(self, rows):
-        self.history_table.setRowCount(0)
-        for row in rows:
-            row_pos = self.history_table.rowCount()
-            self.history_table.insertRow(row_pos)
-            for col, val in enumerate(row):
-                self.history_table.setItem(row_pos, col, QTableWidgetItem(val))
+    # 既に上で定義した search_by_qr() をそのまま利用
 
-if __name__ == '__main__':
+# ------------------- アプリ起動 -------------------
+
+if __name__ == "__main__":
     init_db()
     app = QApplication(sys.argv)
     win = ReagentManager()
