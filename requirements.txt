@@ -2,4 +2,4 @@ PyQt6
 qrcode
 opencv-python
 pyzbar
-
+numpy==1.26.4   # ← PyInstaller 6.x と相性の良い安定版
