@@ -1,42 +1,43 @@
 name: Build Windows EXE
 
 on:
-  push:
-    branches: [ "main" ]     # ← デフォルトブランチが main ならそのまま
-  workflow_dispatch:         # Actions 画面から手動実行も可
+  push:               # main へ push で自動ビルド
+    branches: ["main"]
+  workflow_dispatch:  # Actions 画面から手動実行
 
 jobs:
-  build:
-    runs-on: windows-latest   # 64-bit Windows ランナー
+  build-win:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash   # ← バックスラッシュ改行を使うので bash 固定
 
     steps:
       # 1) ソース取得
       - uses: actions/checkout@v4
 
-      # 2) Python 3.11 をセットアップ
+      # 2) Python セットアップ
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 3) 依存ライブラリをインストール
-      - name: Install dependencies
+      # 3) 依存インストール
+      - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt       # NumPy 1.26.4 固定をここで取得
-          pip install pyinstaller==6.6.0        # PyInstaller 6.x 系を明示
+          pip install -r requirements.txt
+          pip install pyinstaller==6.6.0
 
-      # 4) EXE ビルド
+      # 4) PyInstaller ビルド
       - name: Build EXE
-        shell: bash       # ← 行末バックスラッシュを使うので bash を指定
         run: |
           pyinstaller --noconfirm --onefile --windowed \
-            --collect-all pyzbar \    # libzbar-64.dll を含める
-            --collect-binaries cv2 \  # OpenCV の videoio DLL も含める
-            reagent_qr_manager.py     # ← スクリプト名に合わせて変更
+            --collect-all pyzbar \
+            --collect-binaries cv2 \
+            reagent_qr_manager.py     # ★←ここを実ファイル名に合わせる★
 
-      # 5) アーティファクトとしてアップロード
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # 5) 成果物アップロード
+      - uses: actions/upload-artifact@v4
         with:
-          name: Reagent_Qr_Manager_exe
-          path: dist/reagent_qr_manager.exe     # スクリプト名に合わせて変更
+          name: Reagent_Qr_Manager_win
+          path: dist/reagent_qr_manager.exe     # ★同上★
