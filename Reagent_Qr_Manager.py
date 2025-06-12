@@ -273,10 +273,11 @@ class ReagentManager(QWidget):
             return
 
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.qr_payload:
-            for line in dlg.qr_payload.split("
+            payload = dlg.qr_payload or ""
+            for line in payload.split("
 "):
                 if line.startswith("管理番号"):
-                    code = line.split(":")[-1].strip()
+                    code = line.split(":", 1)[-1].strip()
                     self.search_history_by_code(code)
                     return
             QMessageBox.information(self, "QR読取", "管理番号を含む QR ではありませんでした。")
