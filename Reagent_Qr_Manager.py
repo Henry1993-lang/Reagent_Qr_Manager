@@ -233,8 +233,23 @@ class ReagentManager(QWidget):
         try:
             dlg = QRCameraDialog(self)
         except RuntimeError as e:
-            QMessageBox.warning(self, "カメラエラー", str(e)); return
+            QMessageBox.warning(self, "カメラエラー", str(e))
+            return
+
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.qr_payload:
             for line in dlg.qr_payload.splitlines():
                 if line.startswith("管理番号"):
-                    self.search_history
+                    self.search_history_by_code(line.split(":", 1)[-1].strip())
+                    return
+            QMessageBox.information(self, "QR読取", "管理番号を含む QR ではありませんでした。")
+
+# ------------------- main -------------------
+
+if __name__ == "__main__":
+    init_db()
+
+    app = QApplication(sys.argv)
+    win = ReagentManager()
+    win.show()
+
+    sys.exit(app.exec())
