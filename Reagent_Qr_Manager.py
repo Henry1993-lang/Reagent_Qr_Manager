@@ -264,7 +264,24 @@ class ReagentManager(QWidget):
             return
         self.populate_history_table(code)
 
-    # 既に上で定義した search_by_qr() をそのまま利用
+        def search_by_qr(self):
+        """カメラプレビューを表示し、QR が1枚読み取れたら履歴検索に反映"""
+        try:
+            dlg = QRCameraDialog(self)
+        except RuntimeError as err:
+            QMessageBox.warning(self, "カメラエラー", str(err))
+            return
+
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.qr_payload:
+            for line in dlg.qr_payload.split("
+"):
+                if line.startswith("管理番号"):
+                    code = line.split(":")[-1].strip()
+                    self.search_history_by_code(code)
+                    return
+            QMessageBox.information(self, "QR読取", "管理番号を含む QR ではありませんでした。")
+
+    # ------------------- アプリ起動 -------------------
 
 # ------------------- アプリ起動 -------------------
 
