@@ -264,7 +264,7 @@ class ReagentManager(QWidget):
             return
         self.populate_history_table(code)
 
-        def search_by_qr(self):
+            def search_by_qr(self):
         """カメラプレビューを表示し、QR が 1 枚読めたら履歴検索へ反映する"""
         try:
             dlg = QRCameraDialog(self)
