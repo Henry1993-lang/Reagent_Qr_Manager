@@ -265,7 +265,7 @@ class ReagentManager(QWidget):
         self.populate_history_table(code)
 
         def search_by_qr(self):
-        """カメラプレビューを表示し、QR が1枚読み取れたら履歴検索に反映"""
+        """カメラプレビューを表示し、QR が 1 枚読めたら履歴検索へ反映する"""
         try:
             dlg = QRCameraDialog(self)
         except RuntimeError as err:
